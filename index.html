@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Monaco Free Drive</title>
+    <meta name="description" content="Realistic free-drive simulator through a Monaco-inspired street circuit. Feel the physics!" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="ui">
+      <div id="main-menu">
+        <h1 class="menu-title">Monaco Free Drive</h1>
+        <p class="menu-subtitle">Realistic Street Driving</p>
+        <div class="menu-buttons">
+          <button id="btn-play" class="glow-btn">FREE DRIVE</button>
+          <button id="btn-menu-settings" class="glow-btn outline">SETTINGS</button>
+        </div>
+      </div>
+
+      <div id="hud" class="hidden">
+        <div id="title">Monaco Free Drive</div>
+        <div id="topbar">
+          <!-- Free Drive Mode -->
+        </div>
+
+        <button id="settings-btn" title="Settings">⚙</button>
+
+        <div id="message" aria-live="polite"></div>
+
+        <div id="bottom">
+          <div id="speed-card">
+            <div class="label">Speed</div>
+            <div id="speed">0 km/h</div>
+          </div>
+          <div id="gear-card">
+            <div class="label">Gear</div>
+            <div id="gear">N</div>
+          </div>
+          <div id="info-card">
+            <div class="label">Status</div>
+            <div id="status">Engine start...</div>
+            <div id="hint">Arrow keys / WASD to drive · Space = handbrake · R = restart</div>
+          </div>
+        </div>
+        
+        <div id="minimap-container">
+          <canvas id="minimap"></canvas>
+        </div>
+      </div>
+      
+      <div id="settings-overlay" class="hidden">
+        <div id="settings-panel">
+          <h2>SETTINGS</h2>
+          <div class="setting-row">
+            <div class="setting-label">Steering Sensitivity</div>
+            <div class="sensitivity-options">
+              <button class="sens-btn" data-value="0.6">Low</button>
+              <button class="sens-btn active" data-value="1.0">Medium</button>
+              <button class="sens-btn" data-value="1.5">High</button>
+            </div>
+          </div>
+          <button id="settings-close">CLOSE</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
