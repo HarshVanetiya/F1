@@ -8,6 +8,161 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 const TRACK_WIDTH = 22;
 const NUM_RIVALS = 5;
 
+// ─── Sound System (Web Audio API) ──────────────────────
+let audioCtx = null;
+const sounds = {};
+let lastCountdownBeat = -1;
+
+function initAudio() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Master volume
+    sounds.master = audioCtx.createGain();
+    sounds.master.gain.value = 0.4;
+    sounds.master.connect(audioCtx.destination);
+
+    initEngineSound();
+    initScreechSound();
+  } catch (e) {
+    console.warn('Audio not available:', e);
+  }
+}
+
+function initEngineSound() {
+  const engineGain = audioCtx.createGain();
+  engineGain.gain.value = 0;
+
+  // Low-pass filter — opens up with RPM for realism
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 300;
+  filter.Q.value = 3;
+
+  engineGain.connect(filter);
+  filter.connect(sounds.master);
+
+  // Layered oscillators: fundamental + overtones for rich engine tone
+  const oscConfigs = [
+    { freq: 55, type: 'sawtooth', vol: 0.30 },
+    { freq: 110, type: 'square', vol: 0.18 },
+    { freq: 165, type: 'sawtooth', vol: 0.10 },
+    { freq: 220, type: 'triangle', vol: 0.06 },
+  ];
+  const oscillators = oscConfigs.map(cfg => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = cfg.type;
+    osc.frequency.value = cfg.freq;
+    gain.gain.value = cfg.vol;
+    osc.connect(gain);
+    gain.connect(engineGain);
+    osc.start();
+    return { osc, gain, baseFreq: cfg.freq };
+  });
+
+  sounds.engine = { gain: engineGain, filter, oscillators };
+}
+
+function initScreechSound() {
+  // White noise buffer for tire screech
+  const bufSize = audioCtx.sampleRate * 2;
+  const noiseBuf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = noiseBuf;
+  source.loop = true;
+
+  const screechGain = audioCtx.createGain();
+  screechGain.gain.value = 0;
+
+  const bandpass = audioCtx.createBiquadFilter();
+  bandpass.type = 'bandpass';
+  bandpass.frequency.value = 3000;
+  bandpass.Q.value = 4;
+
+  source.connect(screechGain);
+  screechGain.connect(bandpass);
+  bandpass.connect(sounds.master);
+  source.start();
+
+  sounds.screechGain = screechGain;
+}
+
+function updateSounds(speed, maxSpeed, isAccel, isTurning, isHandbrake) {
+  if (!audioCtx || !sounds.engine) return;
+  const t = audioCtx.currentTime;
+  const absSpeed = Math.abs(speed);
+  const ratio = absSpeed / maxSpeed;
+
+  // ── Engine pitch & volume ──
+  const pitchMul = 1 + ratio * 3.5;
+  sounds.engine.oscillators.forEach(o => {
+    o.osc.frequency.setTargetAtTime(o.baseFreq * pitchMul, t, 0.08);
+  });
+  const vol = 0.06 + ratio * 0.28 + (isAccel ? 0.12 : 0);
+  sounds.engine.gain.gain.setTargetAtTime(vol, t, 0.1);
+  sounds.engine.filter.frequency.setTargetAtTime(300 + ratio * 2800, t, 0.08);
+
+  // ── Tire screech ──
+  let screech = 0;
+  if (absSpeed > 10 && isHandbrake) screech = 0.12 * Math.min(1, absSpeed / 30);
+  else if (absSpeed > 20 && isTurning) screech = 0.04 * Math.min(1, absSpeed / 50);
+  if (sounds.screechGain) sounds.screechGain.gain.setTargetAtTime(screech, t, 0.04);
+}
+
+function playCollisionSound() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const dur = 0.15;
+
+  // Low thud
+  const osc = audioCtx.createOscillator();
+  const g1 = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.value = 120;
+  g1.gain.setValueAtTime(0.3, t);
+  g1.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(g1);
+  g1.connect(sounds.master);
+  osc.start(t);
+  osc.stop(t + dur);
+
+  // Noise burst
+  const nb = audioCtx.createBuffer(1, audioCtx.sampleRate * dur | 0, audioCtx.sampleRate);
+  const nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const ns = audioCtx.createBufferSource();
+  const g2 = audioCtx.createGain();
+  g2.gain.setValueAtTime(0.2, t);
+  g2.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  ns.buffer = nb;
+  ns.connect(g2);
+  g2.connect(sounds.master);
+  ns.start(t);
+}
+
+function playCountdownBeep(isGo) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const freq = isGo ? 880 : 440;
+  const dur = isGo ? 0.4 : 0.15;
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0.25, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(gain);
+  gain.connect(sounds.master);
+  osc.start(t);
+  osc.stop(t + dur);
+}
+
 // ─── Settings ──────────────────────────────────────────
 let sensitivityMultiplier = 1.0;
 
@@ -39,6 +194,7 @@ settingsClose.addEventListener("click", () => {
 
 // ─── Main Menu ─────────────────────────────────────────
 btnPlay.addEventListener("click", () => {
+  initAudio();
   mainMenu.classList.add("hidden");
   hud.classList.remove("hidden");
   race.phase = "countdown";
@@ -318,12 +474,9 @@ function buildTrackEdgeAssets(curve, width, segments) {
   
   const kerbVerts = [];
   const kerbNormals = [];
-  const barrierVerts = [];
-  const barrierNormals = [];
-  
+
   const kerbIndicesRed = [];
   const kerbIndicesWhite = [];
-  const barrierIndices = [];
 
   for (let i = 0; i < segments; i++) {
     const t1 = i / segments;
@@ -366,46 +519,7 @@ function buildTrackEdgeAssets(curve, width, segments) {
         else kerbIndicesWhite.push(a, c, b, b, c, d);
       }
       
-      // -- BARRIERS (ARMCO) --
-      const bOuter1 = p1.clone().add(lat1.clone().multiplyScalar(s * (width / 2 + barrierOffset)));
-      const bOuter2 = p2.clone().add(lat2.clone().multiplyScalar(s * (width / 2 + barrierOffset)));
-      
-      const bVOffset = barrierVerts.length / 3;
-      const h = 2.0;
-      barrierVerts.push(
-        bOuter1.x, bOuter1.y, bOuter1.z,
-        bOuter1.x, bOuter1.y + h, bOuter1.z,
-        bOuter2.x, bOuter2.y, bOuter2.z,
-        bOuter2.x, bOuter2.y + h, bOuter2.z
-      );
-      barrierNormals.push(
-        -s*lat1.x, 0, -s*lat1.z,
-        -s*lat1.x, 0, -s*lat1.z,
-        -s*lat2.x, 0, -s*lat2.z,
-        -s*lat2.x, 0, -s*lat2.z
-      );
-      if (s === -1) {
-        barrierIndices.push(bVOffset, bVOffset+1, bVOffset+2, bVOffset+1, bVOffset+3, bVOffset+2);
-      } else {
-        barrierIndices.push(bVOffset, bVOffset+2, bVOffset+1, bVOffset+1, bVOffset+2, bVOffset+3);
-      }
-      
-      // Top cap thickness
-      const bThick1 = bOuter1.clone().add(lat1.clone().multiplyScalar(s * 0.4));
-      const bThick2 = bOuter2.clone().add(lat2.clone().multiplyScalar(s * 0.4));
-      const capVOffset = barrierVerts.length / 3;
-      barrierVerts.push(
-        bOuter1.x, bOuter1.y + h, bOuter1.z,
-        bThick1.x, bThick1.y + h, bThick1.z,
-        bOuter2.x, bOuter2.y + h, bOuter2.z,
-        bThick2.x, bThick2.y + h, bThick2.z
-      );
-      barrierNormals.push(0,1,0, 0,1,0, 0,1,0, 0,1,0);
-      if (s === -1) {
-        barrierIndices.push(capVOffset, capVOffset+2, capVOffset+1, capVOffset+1, capVOffset+2, capVOffset+3);
-      } else {
-        barrierIndices.push(capVOffset, capVOffset+1, capVOffset+2, capVOffset+1, capVOffset+3, capVOffset+2);
-      }
+
     }
   }
 
@@ -417,10 +531,7 @@ function buildTrackEdgeAssets(curve, width, segments) {
   kerbGeo.addGroup(0, kerbIndicesRed.length, 0);
   kerbGeo.addGroup(kerbIndicesRed.length, kerbIndicesWhite.length, 1);
   
-  const barrierGeo = new THREE.BufferGeometry();
-  barrierGeo.setAttribute('position', new THREE.Float32BufferAttribute(barrierVerts, 3));
-  barrierGeo.setAttribute('normal', new THREE.Float32BufferAttribute(barrierNormals, 3));
-  barrierGeo.setIndex(barrierIndices);
+
   
   // Build barrier colliders for physics
   // Only add colliders that won't conflict with other track sections
@@ -456,7 +567,7 @@ function buildTrackEdgeAssets(curve, width, segments) {
     }
   }
 
-  return { kerbGeo, barrierGeo };
+  return { kerbGeo };
 }
 
 const edges = buildTrackEdgeAssets(trackCurve, TRACK_WIDTH, 800);
@@ -469,46 +580,313 @@ kerbMesh.receiveShadow = true;
 kerbMesh.layers.enable(1);
 scene.add(kerbMesh);
 
-const barrierMesh = new THREE.Mesh(edges.barrierGeo, new THREE.MeshStandardMaterial({ color: 0xd0d5dd, metalness: 0.7, roughness: 0.35 }));
-barrierMesh.receiveShadow = true;
-barrierMesh.castShadow = true;
-barrierMesh.layers.enable(1);
-scene.add(barrierMesh);
+// ─── Diverse Barrier System ─────────────────────────────
+// Different barrier types placed at specific track sections for realism
+function buildDiverseBarriers(curve, width) {
+  const barrierOffset = 1.6;
+
+  // Track section → barrier type mapping
+  const sections = [
+    { startT: 0.00, endT: 0.10, type: 'grill' },     // Start/finish straight
+    { startT: 0.10, endT: 0.18, type: 'tire' },       // Turn 1
+    { startT: 0.18, endT: 0.28, type: 'grill' },      // Back straight
+    { startT: 0.28, endT: 0.35, type: 'concrete' },   // Tunnel section
+    { startT: 0.35, endT: 0.45, type: 'tecpro' },     // Turn 2 (high-speed)
+    { startT: 0.45, endT: 0.55, type: 'tire' },       // Hairpin
+    { startT: 0.55, endT: 0.68, type: 'catch' },      // Esses (near grandstands)
+    { startT: 0.68, endT: 0.82, type: 'grill' },      // Sweeping section
+    { startT: 0.82, endT: 0.92, type: 'tecpro' },     // Final corner entry
+    { startT: 0.92, endT: 1.00, type: 'concrete' },   // Final corner to start
+  ];
+
+  // Check if a barrier position overlaps another track section
+  function isValidPosition(pos, t) {
+    for (let j = 0; j < splineCache.length; j++) {
+      let tDiff = Math.abs(splineCache[j].t - t);
+      if (tDiff > 0.5) tDiff = 1 - tDiff;
+      if (tDiff < 0.08) continue;
+      const dx = pos.x - splineCache[j].point.x;
+      const dz = pos.z - splineCache[j].point.z;
+      if (dx * dx + dz * dz < (width * 0.8) * (width * 0.8)) return false;
+    }
+    return true;
+  }
+
+  // Collect all barrier positions grouped by type
+  const typePositions = { grill: [], tire: [], tecpro: [], concrete: [], catch: [] };
+  const step = 0.005;
+
+  for (const section of sections) {
+    for (let t = section.startT; t < section.endT; t += step) {
+      const pt = curve.getPointAt(t);
+      const tn = curve.getTangentAt(t);
+      const heading = Math.atan2(tn.z, tn.x);
+      const txz = new THREE.Vector3(tn.x, 0, tn.z).normalize();
+      const lat = new THREE.Vector3(-txz.z, 0, txz.x);
+
+      for (const s of [-1, 1]) {
+        const basePos = pt.clone().add(lat.clone().multiplyScalar(s * (width / 2 + barrierOffset)));
+        if (!isValidPosition(basePos, t)) continue;
+        typePositions[section.type].push({ pos: basePos, heading, s, y: pt.y });
+      }
+    }
+  }
+
+  const dummy = new THREE.Object3D();
+
+  // ═══ GRILL FENCE — Vertical posts with horizontal rails (see-through) ═══
+  {
+    const data = typePositions.grill;
+    if (data.length > 0) {
+      // Vertical posts
+      const postGeo = new THREE.CylinderGeometry(0.08, 0.12, 2.2, 6);
+      const postMat = new THREE.MeshStandardMaterial({
+        color: 0x555555, metalness: 0.8, roughness: 0.3, side: THREE.DoubleSide
+      });
+      const posts = new THREE.InstancedMesh(postGeo, postMat, data.length);
+      posts.castShadow = true;
+      posts.receiveShadow = true;
+
+      data.forEach((d, i) => {
+        dummy.position.set(d.pos.x, d.y + 1.1, d.pos.z);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        posts.setMatrixAt(i, dummy.matrix);
+      });
+      posts.instanceMatrix.needsUpdate = true;
+      posts.layers.enable(1);
+      scene.add(posts);
+
+      // 3 horizontal rails per post
+      const railGeo = new THREE.BoxGeometry(0.05, 0.1, 1);
+      const railMat = new THREE.MeshStandardMaterial({
+        color: 0xc0c0c0, metalness: 0.7, roughness: 0.3, side: THREE.DoubleSide
+      });
+      const railHeights = [0.35, 1.05, 1.75];
+      const rails = new THREE.InstancedMesh(railGeo, railMat, data.length * 3);
+      rails.castShadow = true;
+
+      data.forEach((d, i) => {
+        railHeights.forEach((rh, ri) => {
+          dummy.position.set(d.pos.x, d.y + rh, d.pos.z);
+          dummy.rotation.set(0, Math.PI / 2 - d.heading, 0);
+          dummy.scale.set(1, 1, 3.2);
+          dummy.updateMatrix();
+          rails.setMatrixAt(i * 3 + ri, dummy.matrix);
+        });
+      });
+      rails.instanceMatrix.needsUpdate = true;
+      rails.layers.enable(1);
+      scene.add(rails);
+    }
+  }
+
+  // ═══ TIRE BARRIERS — Stacked colored tires for corner protection ═══
+  {
+    const data = typePositions.tire;
+    if (data.length > 0) {
+      const tireGeo = new THREE.TorusGeometry(0.32, 0.16, 8, 14);
+      const colors = [0xdd2222, 0x2255dd, 0xeecc22];
+
+      for (let ci = 0; ci < colors.length; ci++) {
+        const tireMat = new THREE.MeshStandardMaterial({
+          color: colors[ci], roughness: 0.85, side: THREE.DoubleSide
+        });
+        const subset = data.filter((_, idx) => idx % colors.length === ci);
+        if (subset.length === 0) continue;
+
+        // 3 tires stacked at each position
+        const tires = new THREE.InstancedMesh(tireGeo, tireMat, subset.length * 3);
+        tires.castShadow = true;
+        tires.receiveShadow = true;
+
+        subset.forEach((d, i) => {
+          for (let row = 0; row < 3; row++) {
+            dummy.position.set(d.pos.x, d.y + 0.22 + row * 0.42, d.pos.z);
+            dummy.rotation.set(0, Math.PI / 2 - d.heading, 0);
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            tires.setMatrixAt(i * 3 + row, dummy.matrix);
+          }
+        });
+        tires.instanceMatrix.needsUpdate = true;
+        tires.layers.enable(1);
+        scene.add(tires);
+      }
+    }
+  }
+
+  // ═══ TECPRO BARRIERS — Foam safety blocks (bright green/yellow) ═══
+  {
+    const data = typePositions.tecpro;
+    if (data.length > 0) {
+      const blockGeo = new THREE.BoxGeometry(0.8, 1.2, 1.6);
+      const tecColors = [0x22bb55, 0x33dd66];
+
+      for (let ci = 0; ci < tecColors.length; ci++) {
+        const mat = new THREE.MeshStandardMaterial({
+          color: tecColors[ci], roughness: 0.65, side: THREE.DoubleSide
+        });
+        const subset = data.filter((_, idx) => idx % tecColors.length === ci);
+        if (subset.length === 0) continue;
+
+        const blocks = new THREE.InstancedMesh(blockGeo, mat, subset.length);
+        blocks.castShadow = true;
+        blocks.receiveShadow = true;
+
+        subset.forEach((d, i) => {
+          dummy.position.set(d.pos.x, d.y + 0.6, d.pos.z);
+          dummy.rotation.set(0, Math.PI / 2 - d.heading, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          blocks.setMatrixAt(i, dummy.matrix);
+        });
+        blocks.instanceMatrix.needsUpdate = true;
+        blocks.layers.enable(1);
+        scene.add(blocks);
+      }
+    }
+  }
+
+  // ═══ CONCRETE JERSEY BARRIERS — Low trapezoidal concrete walls ═══
+  {
+    const data = typePositions.concrete;
+    if (data.length > 0) {
+      // Trapezoidal cross-section (wider at base)
+      const shape = new THREE.Shape();
+      shape.moveTo(-0.35, 0);
+      shape.lineTo(0.35, 0);
+      shape.lineTo(0.2, 1.0);
+      shape.lineTo(-0.2, 1.0);
+      shape.closePath();
+      const jerseyGeo = new THREE.ExtrudeGeometry(shape, { depth: 1.6, bevelEnabled: false });
+      jerseyGeo.translate(0, 0, -0.8); // Center along Z to align with stripe BoxGeometry
+      const concreteMat = new THREE.MeshStandardMaterial({
+        color: 0x888888, roughness: 0.95, metalness: 0.05, side: THREE.DoubleSide
+      });
+
+      const barriers = new THREE.InstancedMesh(jerseyGeo, concreteMat, data.length);
+      barriers.castShadow = true;
+      barriers.receiveShadow = true;
+
+      data.forEach((d, i) => {
+        dummy.position.set(d.pos.x, d.y, d.pos.z);
+        dummy.rotation.set(0, Math.PI / 2 - d.heading, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        barriers.setMatrixAt(i, dummy.matrix);
+      });
+      barriers.instanceMatrix.needsUpdate = true;
+      barriers.layers.enable(1);
+      scene.add(barriers);
+
+      // Yellow safety stripe on top
+      const stripeGeo = new THREE.BoxGeometry(0.5, 0.08, 1.6);
+      const stripeMat = new THREE.MeshStandardMaterial({
+        color: 0xddcc00, roughness: 0.7, side: THREE.DoubleSide
+      });
+      const stripes = new THREE.InstancedMesh(stripeGeo, stripeMat, data.length);
+
+      data.forEach((d, i) => {
+        dummy.position.set(d.pos.x, d.y + 1.02, d.pos.z);
+        dummy.rotation.set(0, Math.PI / 2 - d.heading, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        stripes.setMatrixAt(i, dummy.matrix);
+      });
+      stripes.instanceMatrix.needsUpdate = true;
+      stripes.layers.enable(1);
+      scene.add(stripes);
+    }
+  }
+
+  // ═══ CATCH FENCING — Tall wire mesh behind grandstands ═══
+  {
+    const data = typePositions.catch;
+    if (data.length > 0) {
+      // Tall posts
+      const catchPostGeo = new THREE.CylinderGeometry(0.06, 0.08, 4.5, 6);
+      const catchPostMat = new THREE.MeshStandardMaterial({
+        color: 0x666666, metalness: 0.6, roughness: 0.4, side: THREE.DoubleSide
+      });
+      const catchPosts = new THREE.InstancedMesh(catchPostGeo, catchPostMat, data.length);
+      catchPosts.castShadow = true;
+
+      data.forEach((d, i) => {
+        dummy.position.set(d.pos.x, d.y + 2.25, d.pos.z);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        catchPosts.setMatrixAt(i, dummy.matrix);
+      });
+      catchPosts.instanceMatrix.needsUpdate = true;
+      catchPosts.layers.enable(1);
+      scene.add(catchPosts);
+
+      // Wire mesh panels (grid-like fencing)
+      const panelGeo = new THREE.PlaneGeometry(1, 4.2, 3, 6);
+      const panelMat = new THREE.MeshStandardMaterial({
+        color: 0xaaaaaa, transparent: true, opacity: 0.25,
+        side: THREE.DoubleSide, wireframe: true
+      });
+      const panels = new THREE.InstancedMesh(panelGeo, panelMat, data.length);
+
+      data.forEach((d, i) => {
+        dummy.position.set(d.pos.x, d.y + 2.1, d.pos.z);
+        dummy.rotation.set(0, Math.PI / 2 - d.heading, 0);
+        dummy.scale.set(3.5, 1, 1);
+        dummy.updateMatrix();
+        panels.setMatrixAt(i, dummy.matrix);
+      });
+      panels.instanceMatrix.needsUpdate = true;
+      panels.layers.enable(1);
+      scene.add(panels);
+
+      // Top horizontal bar
+      const topBarGeo = new THREE.BoxGeometry(0.04, 0.04, 1);
+      const topBarMat = new THREE.MeshStandardMaterial({
+        color: 0x777777, metalness: 0.6, roughness: 0.4, side: THREE.DoubleSide
+      });
+      const topBars = new THREE.InstancedMesh(topBarGeo, topBarMat, data.length);
+
+      data.forEach((d, i) => {
+        dummy.position.set(d.pos.x, d.y + 4.35, d.pos.z);
+        dummy.rotation.set(0, Math.PI / 2 - d.heading, 0);
+        dummy.scale.set(1, 1, 3.5);
+        dummy.updateMatrix();
+        topBars.setMatrixAt(i, dummy.matrix);
+      });
+      topBars.instanceMatrix.needsUpdate = true;
+      topBars.layers.enable(1);
+      scene.add(topBars);
+    }
+  }
+}
+
+buildDiverseBarriers(trackCurve, TRACK_WIDTH);
 
 // ─── Start / Finish Line ───────────────────────────────
 {
-  const sp = trackCurve.getPointAt(0);
-  const st = trackCurve.getTangentAt(0);
+  const sp = trackCurve.getPointAt(0.08);
+  const st = trackCurve.getTangentAt(0.08);
   const heading = Math.atan2(st.z, st.x);
   const txz = new THREE.Vector3(st.x, 0, st.z).normalize();
   const lat = new THREE.Vector3(-txz.z, 0, txz.x);
 
+  // Thin white strip across the track (perpendicular to travel direction)
   const startLine = new THREE.Mesh(
-    new THREE.PlaneGeometry(TRACK_WIDTH, 3.5),
+    new THREE.PlaneGeometry(0.6, TRACK_WIDTH),
     new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.9,
+      roughness: 0.8,
       side: THREE.DoubleSide,
     }),
   );
   startLine.rotation.x = -Math.PI / 2;
-  startLine.rotation.z = -heading;
+  startLine.rotation.y = -heading;
   startLine.position.set(sp.x, sp.y + 0.04, sp.z);
   scene.add(startLine);
-
-  for (let j = -4; j <= 4; j++) {
-    const stripe = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.2, 1.8),
-      new THREE.MeshStandardMaterial({
-        color: j % 2 === 0 ? 0x111111 : 0xffffff,
-      }),
-    );
-    stripe.rotation.x = -Math.PI / 2;
-    stripe.rotation.z = -heading;
-    const off = lat.clone().multiplyScalar(j * 0.55);
-    stripe.position.set(sp.x + off.x, sp.y + 0.05, sp.z + off.z);
-    scene.add(stripe);
-  }
 
   // Start gantry
   const gMat = new THREE.MeshStandardMaterial({
@@ -916,13 +1294,13 @@ window.addEventListener("keyup", (event) => {
 
 // ─── Reset ─────────────────────────────────────────────
 function resetPlayer() {
-  const sp = trackCurve.getPointAt(0.001);
-  const st = trackCurve.getTangentAt(0.001);
+  const sp = trackCurve.getPointAt(0.08);
+  const st = trackCurve.getTangentAt(0.08);
   player.position.set(sp.x, sp.y, sp.z);
   player.heading = Math.atan2(st.z, st.x);
   player.speed = 0;
-  player.trackT = 0.001;
-  player.lastTrackT = 0.001;
+  player.trackT = 0.08;
+  player.lastTrackT = 0.08;
   player.collisionTimer = 0;
   playerCar.position.copy(player.position);
   playerCar.rotation.y = Math.PI / 2 - player.heading;
@@ -1108,6 +1486,7 @@ function updatePlayer(dt) {
 
       if (player.collisionTimer <= 0) {
         player.collisionTimer = 0.3;
+        playCollisionSound();
       }
     }
   }
@@ -1133,6 +1512,7 @@ function updatePlayer(dt) {
       if (player.collisionTimer <= 0) {
         player.collisionTimer = 0.3;
         setFlash("Impact!", 0.5);
+        playCollisionSound();
       }
     }
   }
@@ -1159,6 +1539,7 @@ function updatePlayer(dt) {
       if (player.collisionTimer <= 0) {
          player.collisionTimer = 0.4;
          setFlash("Collision!", 0.4);
+         playCollisionSound();
       }
     }
   });
@@ -1177,6 +1558,9 @@ function updatePlayer(dt) {
   playerCar.rotation.y = Math.PI / 2 - player.heading;
   playerCar.rotation.z = THREE.MathUtils.lerp(playerCar.rotation.z, targetRoll, 8 * dt);
   playerCar.rotation.x = THREE.MathUtils.lerp(playerCar.rotation.x, targetPitch, 8 * dt);
+
+  // ── Update Sounds ──
+  updateSounds(player.speed, 75, accel, turnL || turnR, handbrake);
 }
 
 // ─── Rival AI ──────────────────────────────────────────
@@ -1315,10 +1699,18 @@ function animate() {
 
   if (race.phase === "countdown") {
     race.countdown -= dt;
+    // Countdown beeps at 3, 2, 1
+    const beat = Math.ceil(race.countdown - 0.8);
+    if (beat >= 1 && beat <= 3 && beat !== lastCountdownBeat) {
+      lastCountdownBeat = beat;
+      playCountdownBeep(false);
+    }
     if (race.countdown <= 0) {
       race.phase = "running";
       race.elapsed = 0;
+      lastCountdownBeat = -1;
       setFlash("GO!", 0.8);
+      playCountdownBeep(true);
     }
   } else {
     if (race.phase === "running") {
