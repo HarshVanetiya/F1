@@ -390,17 +390,88 @@ canvas {
   color: var(--muted);
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  margin-bottom: 60px;
+  margin-bottom: 30px;
 }
+
+#team-selector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 40px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 20px 30px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  backdrop-filter: blur(10px);
+}
+
+.team-selector-title {
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-size: 1.1rem;
+  font-weight: bold;
+  letter-spacing: 0.2em;
+  color: var(--muted);
+  margin-bottom: 20px;
+}
+
+#teams-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.team-btn {
+  width: 140px;
+  padding: 12px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid transparent;
+  border-radius: 12px;
+  color: #fff;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-size: 0.9rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.team-btn::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--team-color, #fff);
+  box-shadow: 0 0 10px var(--team-color, #fff);
+}
+
+.team-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+}
+
+.team-btn.selected {
+  border-color: var(--team-color, #fff);
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+}
+
+
 
 .menu-buttons {
   display: flex;
-  flex-direction: column;
-  gap: 20px;
-  width: 300px;
+  flex-direction: row;
+  justify-content: center;
+  gap: 24px;
+  width: 100%;
 }
 
 .glow-btn {
+  min-width: 220px;
   padding: 18px 24px;
   font-family: "Trebuchet MS", "Segoe UI", sans-serif;
   font-size: 1.2rem;

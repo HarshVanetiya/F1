@@ -6,7 +6,23 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 
 // ─── Constants ─────────────────────────────────────────
 const TRACK_WIDTH = 22;
-const NUM_RIVALS = 5;
+const NUM_RIVALS = 10;
+
+// ─── F1 Teams ──────────────────────────────────────────
+const f1Teams = [
+  { name: "Red Bull", color: 0x0600ef },
+  { name: "Mercedes", color: 0x27f4d2 },
+  { name: "Ferrari", color: 0xdc0000 },
+  { name: "McLaren", color: 0xff8000 },
+  { name: "Aston Martin", color: 0x006f62 },
+  { name: "Alpine", color: 0xfd4bc7 },
+  { name: "Williams", color: 0x005aff },
+  { name: "VCARB", color: 0x6692ff },
+  { name: "Audi", color: 0xa62c2b },
+  { name: "Haas", color: 0xffffff },
+  { name: "Cadillac", color: 0x111111 },
+];
+let selectedTeam = f1Teams[2]; // Default to Ferrari
 
 // ─── Sound System (Web Audio API) ──────────────────────
 let audioCtx = null;
@@ -166,7 +182,9 @@ function playCountdownBeep(isGo) {
 // ─── Settings ──────────────────────────────────────────
 let sensitivityMultiplier = 1.0;
 
-// ─── DOM Elements ──────────────────────────────────────
+
+
+// ─── Environment Maps ──────────────────────────────────────
 const speedEl = document.querySelector("#speed");
 const gearEl = document.querySelector("#gear");
 const statusEl = document.querySelector("#status");
@@ -193,10 +211,29 @@ settingsClose.addEventListener("click", () => {
 });
 
 // ─── Main Menu ─────────────────────────────────────────
+const teamsGrid = document.querySelector("#teams-grid");
+f1Teams.forEach((team) => {
+  const btn = document.createElement("button");
+  btn.className = "team-btn";
+  if (team === selectedTeam) btn.classList.add("selected");
+  btn.style.setProperty("--team-color", "#" + team.color.toString(16).padStart(6, '0'));
+  btn.textContent = team.name;
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".team-btn").forEach((b) => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    selectedTeam = team;
+  });
+  teamsGrid.appendChild(btn);
+});
+
 btnPlay.addEventListener("click", () => {
   initAudio();
   mainMenu.classList.add("hidden");
   hud.classList.remove("hidden");
+  
+  // Apply selected colors to cars before race starts
+  applyTeamColors();
+
   race.phase = "countdown";
   race.countdown = 3.8;
   race.elapsed = 0;
@@ -282,6 +319,8 @@ const sunGlow = new THREE.Mesh(
 );
 sunGlow.position.set(-120, 150, -180);
 scene.add(sunGlow);
+
+
 
 // ─── Track Circuit Definition (Clean Racing Circuit) ───
 // Designed with wide spacing so no track section overlaps another.
@@ -955,6 +994,7 @@ buildDiverseBarriers(trackCurve, TRACK_WIDTH);
   }
 }
 
+
 // ─── Scenery: Buildings ────────────────────────────────
 const buildingColliders = []; // {cx, cz, halfW, halfD}
 
@@ -1141,6 +1181,8 @@ function createLowPolyCar(color) {
   return group;
 }
 
+
+
 // ─── Player Car ────────────────────────────────────────
 const playerCar = new THREE.Group();
 playerCar.rotation.order = "YXZ"; // Allow proper pitch/roll relative to heading
@@ -1149,22 +1191,54 @@ playerCar.add(fallbackCar);
 scene.add(playerCar);
 
 // ─── Rival Cars ────────────────────────────────────────
-const rivalTints = [0x3388ff, 0xffdd33, 0xeeeeee, 0xff6699, 0x44ddaa];
 const rivals = Array.from({ length: NUM_RIVALS }, (_, i) => {
   const car = new THREE.Group();
-  const fb = createLowPolyCar(rivalTints[i % rivalTints.length]);
+  const fb = createLowPolyCar(0xffffff);
   car.add(fb);
   scene.add(car);
   return {
     mesh: car,
     fallback: fb,
-    tintColor: rivalTints[i % rivalTints.length],
+    gltfMesh: null,
+    tintColor: 0xffffff,
     t: i * 0.18,
     baseLaneOffset: -4 + (i % 3) * 4,
     laneOffset: -4 + (i % 3) * 4,
     speed: 20 + i * 3,
   };
 });
+
+let playerGltfMesh = null;
+
+function applyColorToCar(carObject, hexColor) {
+  if (!carObject) return;
+  carObject.traverse((c) => {
+    if (c.isMesh && c.material) {
+      if (!c.userData.originalMaterial) {
+        c.userData.originalMaterial = c.material.clone();
+        c.material = c.userData.originalMaterial.clone();
+      }
+      const mat = c.userData.originalMaterial;
+      const lum = mat.color.r * 0.299 + mat.color.g * 0.587 + mat.color.b * 0.114;
+      if (lum > 0.12) {
+        c.material.color.setHex(hexColor);
+      }
+    }
+  });
+}
+
+window.applyTeamColors = function() {
+  applyColorToCar(fallbackCar, selectedTeam.color);
+  applyColorToCar(playerGltfMesh, selectedTeam.color);
+
+  const remainingTeams = f1Teams.filter(t => t !== selectedTeam);
+  rivals.forEach((rival, i) => {
+    const team = remainingTeams[i % remainingTeams.length];
+    rival.tintColor = team.color;
+    applyColorToCar(rival.fallback, team.color);
+    applyColorToCar(rival.gltfMesh, team.color);
+  });
+};
 
 // ─── GLTF Model Loading ───────────────────────────────
 const loader = new GLTFLoader();
@@ -1183,15 +1257,15 @@ loader.load(
     const autoScale = targetLen / maxDim;
 
     // Player model
-    const pm = model.clone();
-    pm.scale.set(autoScale, autoScale, autoScale);
-    pm.position.set(
+    playerGltfMesh = model.clone();
+    playerGltfMesh.scale.set(autoScale, autoScale, autoScale);
+    playerGltfMesh.position.set(
       -center.x * autoScale,
-      -center.y * autoScale + 0.45,
+      (-center.y + size.y / 2) * autoScale + 0.02,
       -center.z * autoScale,
     );
-    pm.rotation.y = Math.PI;
-    pm.traverse((c) => {
+    playerGltfMesh.rotation.y = Math.PI;
+    playerGltfMesh.traverse((c) => {
       if (c.isMesh) {
         c.castShadow = true;
         c.receiveShadow = true;
@@ -1202,15 +1276,15 @@ loader.load(
       }
     });
     fallbackCar.visible = false;
-    playerCar.add(pm);
+    playerCar.add(playerGltfMesh);
 
-    // Rival models — same model, different tint
+    // Rival models
     rivals.forEach((rival) => {
       const clone = model.clone();
       clone.scale.set(autoScale, autoScale, autoScale);
       clone.position.set(
         -center.x * autoScale,
-        -center.y * autoScale + 0.45,
+        (-center.y + size.y / 2) * autoScale + 0.02,
         -center.z * autoScale,
       );
       clone.rotation.y = Math.PI;
@@ -1218,21 +1292,18 @@ loader.load(
         if (c.isMesh) {
           c.castShadow = true;
           c.receiveShadow = true;
-          c.material = c.material.clone();
-          c.material.metalness = 0.7;
-          c.material.roughness = 0.2;
-          const lum =
-            c.material.color.r * 0.299 +
-            c.material.color.g * 0.587 +
-            c.material.color.b * 0.114;
-          if (lum > 0.12) {
-            c.material.color.set(rival.tintColor);
+          if (c.material) {
+            c.material.metalness = 0.7;
+            c.material.roughness = 0.2;
           }
         }
       });
+      rival.gltfMesh = clone;
       rival.fallback.visible = false;
       rival.mesh.add(clone);
     });
+
+    applyTeamColors();
   },
   undefined,
   () => {
@@ -1460,7 +1531,7 @@ function updatePlayer(dt) {
   );
 
   // ── Barrier Collision ──
-  const carRadius = 2.2;
+  const carRadius = 1.2;
   const playerPos2D = new THREE.Vector2(player.position.x, player.position.z);
   for (let i = 0; i < barrierColliders.length; i++) {
     const bc = barrierColliders[i];
@@ -1526,7 +1597,7 @@ function updatePlayer(dt) {
     const dx = player.position.x - rival.mesh.position.x;
     const dz = player.position.z - rival.mesh.position.z;
     const distSq = dx * dx + dz * dz;
-    const colDist = 3.2;
+    const colDist = 2.0;
     if (distSq < colDist * colDist) {
       const dist = Math.sqrt(distSq) || 0.1;
       const overlap = colDist - dist;
