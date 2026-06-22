@@ -535,3 +535,51 @@ canvas {
   width: 100%;
   height: 100%;
 }
+
+/* ─── Mobile Portrait Warning ─── */
+#portrait-warning {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--bg);
+  color: var(--text);
+  z-index: 99999;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 24px;
+}
+
+#portrait-warning div {
+  font-size: 4rem;
+  margin-bottom: 24px;
+  animation: rotatePhone 2s infinite ease-in-out;
+}
+
+#portrait-warning h2 {
+  font-family: var(--font-header);
+  font-size: 2rem;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+
+#portrait-warning p {
+  font-size: 1.2rem;
+  opacity: 0.8;
+}
+
+@keyframes rotatePhone {
+  0% { transform: rotate(0deg); }
+  50% { transform: rotate(-90deg); }
+  100% { transform: rotate(-90deg); }
+}
+
+@media screen and (orientation: portrait) {
+  #portrait-warning {
+    display: flex;
+  }
+  #ui, canvas {
+    display: none !important;
+  }
+}

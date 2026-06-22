@@ -4,6 +4,36 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 
+// ─── Mobile Controls ───────────────────────────────────
+const isMobile = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+let mobileAccel = false;
+let mobileSteer = 0;
+
+window.addEventListener('touchstart', (e) => {
+  if (e.target.tagName === 'CANVAS') {
+    mobileAccel = true;
+  }
+});
+window.addEventListener('touchend', () => {
+  mobileAccel = false;
+});
+
+function handleOrientation(event) {
+  let angle = screen.orientation ? screen.orientation.angle : window.orientation;
+  let tilt = 0;
+  if (angle === 90) {
+    tilt = event.beta;
+  } else if (angle === -90 || angle === 270) {
+    tilt = -event.beta;
+  } else {
+    tilt = event.gamma;
+  }
+  
+  if (tilt != null) {
+    mobileSteer = Math.max(-1, Math.min(1, tilt / 35));
+  }
+}
+
 // ─── Constants ─────────────────────────────────────────
 const TRACK_WIDTH = 22;
 const NUM_RIVALS = 10;
@@ -53,32 +83,26 @@ function initEngineSound() {
   // Low-pass filter — opens up with RPM for realism
   const filter = audioCtx.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.frequency.value = 300;
-  filter.Q.value = 3;
+  filter.frequency.value = 800;
+  filter.Q.value = 1;
 
   engineGain.connect(filter);
   filter.connect(sounds.master);
 
-  // Layered oscillators: fundamental + overtones for rich engine tone
-  const oscConfigs = [
-    { freq: 55, type: 'sawtooth', vol: 0.30 },
-    { freq: 110, type: 'square', vol: 0.18 },
-    { freq: 165, type: 'sawtooth', vol: 0.10 },
-    { freq: 220, type: 'triangle', vol: 0.06 },
-  ];
-  const oscillators = oscConfigs.map(cfg => {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = cfg.type;
-    osc.frequency.value = cfg.freq;
-    gain.gain.value = cfg.vol;
-    osc.connect(gain);
-    gain.connect(engineGain);
-    osc.start();
-    return { osc, gain, baseFreq: cfg.freq };
-  });
+  sounds.engine = { gain: engineGain, filter, source: null };
 
-  sounds.engine = { gain: engineGain, filter, oscillators };
+  fetch('engine.m4a')
+    .then(response => response.arrayBuffer())
+    .then(buffer => audioCtx.decodeAudioData(buffer))
+    .then(audioBuffer => {
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.loop = true;
+      source.connect(engineGain);
+      source.start();
+      sounds.engine.source = source;
+    })
+    .catch(err => console.error("Error loading engine.m4a:", err));
 }
 
 function initScreechSound() {
@@ -113,15 +137,32 @@ function updateSounds(speed, maxSpeed, isAccel, isTurning, isHandbrake) {
   const t = audioCtx.currentTime;
   const absSpeed = Math.abs(speed);
   const ratio = absSpeed / maxSpeed;
+  
+  // Simulate gear shifts dropping the RPM
+  const kmh = Math.round(absSpeed * 3.6);
+  let fakeRpm = 0;
+  if (kmh > 1) {
+    let minKmh = 0, maxKmh = 35;
+    if (kmh >= 220) { minKmh = 220; maxKmh = 300; }
+    else if (kmh >= 160) { minKmh = 160; maxKmh = 220; }
+    else if (kmh >= 110) { minKmh = 110; maxKmh = 160; }
+    else if (kmh >= 70)  { minKmh = 70;  maxKmh = 110; }
+    else if (kmh >= 35)  { minKmh = 35;  maxKmh = 70; }
+    
+    let gearRatio = (kmh - minKmh) / (maxKmh - minKmh);
+    // RPM drops to ~65% on upshift, climbs to 100%
+    fakeRpm = 0.65 + (gearRatio * 0.35);
+  }
 
   // ── Engine pitch & volume ──
-  const pitchMul = 1 + ratio * 3.5;
-  sounds.engine.oscillators.forEach(o => {
-    o.osc.frequency.setTargetAtTime(o.baseFreq * pitchMul, t, 0.08);
-  });
-  const vol = 0.06 + ratio * 0.28 + (isAccel ? 0.12 : 0);
+  // Base playback rate is around 0.6 at idle, ramping up to ~2.4 at high RPM
+  const pitchMul = 0.6 + fakeRpm * 1.8;
+  if (sounds.engine.source) {
+    sounds.engine.source.playbackRate.setTargetAtTime(pitchMul, t, 0.08);
+  }
+  const vol = race.phase === "game_over" ? 0 : (0.2 + ratio * 0.4 + (isAccel ? 0.3 : 0));
   sounds.engine.gain.gain.setTargetAtTime(vol, t, 0.1);
-  sounds.engine.filter.frequency.setTargetAtTime(300 + ratio * 2800, t, 0.08);
+  sounds.engine.filter.frequency.setTargetAtTime(800 + ratio * 6000, t, 0.08);
 
   // ── Tire screech ──
   let screech = 0;
@@ -133,30 +174,39 @@ function updateSounds(speed, maxSpeed, isAccel, isTurning, isHandbrake) {
 function playCollisionSound() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
-  const dur = 0.15;
+  const dur = 0.4;
 
-  // Low thud
+  // Heavy Thud
   const osc = audioCtx.createOscillator();
   const g1 = audioCtx.createGain();
-  osc.type = 'sawtooth';
-  osc.frequency.value = 120;
-  g1.gain.setValueAtTime(0.3, t);
+  osc.type = 'square'; // harsher impact
+  osc.frequency.setValueAtTime(100, t);
+  osc.frequency.exponentialRampToValueAtTime(30, t + dur);
+  g1.gain.setValueAtTime(1.0, t);
   g1.gain.exponentialRampToValueAtTime(0.001, t + dur);
   osc.connect(g1);
   g1.connect(sounds.master);
   osc.start(t);
   osc.stop(t + dur);
 
-  // Noise burst
+  // Crunch/Noise burst
   const nb = audioCtx.createBuffer(1, audioCtx.sampleRate * dur | 0, audioCtx.sampleRate);
   const nd = nb.getChannelData(0);
   for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
   const ns = audioCtx.createBufferSource();
+  
+  // Filter the noise to remove high-pitch 'clink' and make it sound heavy
+  const noiseFilter = audioCtx.createBiquadFilter();
+  noiseFilter.type = 'lowpass';
+  noiseFilter.frequency.value = 1500;
+  
   const g2 = audioCtx.createGain();
-  g2.gain.setValueAtTime(0.2, t);
+  g2.gain.setValueAtTime(0.8, t);
   g2.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  
   ns.buffer = nb;
-  ns.connect(g2);
+  ns.connect(noiseFilter);
+  noiseFilter.connect(g2);
   g2.connect(sounds.master);
   ns.start(t);
 }
@@ -227,6 +277,20 @@ f1Teams.forEach((team) => {
 });
 
 btnPlay.addEventListener("click", () => {
+  if (isMobile) {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission()
+        .then(response => {
+          if (response == 'granted') {
+            window.addEventListener('deviceorientation', handleOrientation);
+          }
+        })
+        .catch(console.error);
+    } else {
+      window.addEventListener('deviceorientation', handleOrientation);
+    }
+  }
+
   initAudio();
   mainMenu.classList.add("hidden");
   hud.classList.remove("hidden");
@@ -1404,13 +1468,36 @@ function restartRace() {
 resetPlayer();
 resetRivals();
 
+function triggerGameOver() {
+  if (race.phase === "game_over") return;
+  race.phase = "game_over";
+  player.speed = 0;
+  playCollisionSound();
+  setFlash("GAME OVER", 3.0);
+  
+  if (sounds.engine) {
+    sounds.engine.gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+  }
+  
+  setTimeout(() => {
+    mainMenu.classList.remove("hidden");
+    hud.classList.add("hidden");
+    race.phase = "menu";
+    resetPlayer();
+    resetRivals();
+  }, 3000);
+}
+
 // ─── Player Physics ────────────────────────────────────
 function updatePlayer(dt) {
-  const accel = keys.has("ArrowUp") || keys.has("KeyW");
-  const brake = keys.has("ArrowDown") || keys.has("KeyS");
-  const turnL = keys.has("ArrowLeft") || keys.has("KeyA");
-  const turnR = keys.has("ArrowRight") || keys.has("KeyD");
-  const handbrake = keys.has("Space");
+  const isGameOver = race.phase === "game_over";
+  if (isGameOver) player.speed = 0;
+
+  const accel = !isGameOver && (keys.has("ArrowUp") || keys.has("KeyW") || mobileAccel);
+  const brake = !isGameOver && (keys.has("ArrowDown") || keys.has("KeyS"));
+  const turnL = !isGameOver && (keys.has("ArrowLeft") || keys.has("KeyA"));
+  const turnR = !isGameOver && (keys.has("ArrowRight") || keys.has("KeyD"));
+  const handbrake = !isGameOver && keys.has("Space");
 
   // Track proximity
   const nearest = getClosestSplineData(
@@ -1495,7 +1582,8 @@ function updatePlayer(dt) {
   // ── Steering ──
   // Key change: You CAN steer at standstill / very low speed (like turning wheels while parked)
   // but the car only rotates meaningfully when it has some speed
-  const steering = (turnR ? 1 : 0) - (turnL ? 1 : 0);
+  let steering = (turnR ? 1 : 0) - (turnL ? 1 : 0) + mobileSteer;
+  steering = Math.max(-1, Math.min(1, steering));
   if (steering !== 0) {
     const absSpeed = Math.abs(player.speed);
     let steerRate;
@@ -1556,8 +1644,7 @@ function updatePlayer(dt) {
       }
 
       if (player.collisionTimer <= 0) {
-        player.collisionTimer = 0.3;
-        playCollisionSound();
+        triggerGameOver();
       }
     }
   }
@@ -1581,9 +1668,7 @@ function updatePlayer(dt) {
       player.speed *= 0.2; // Big speed loss hitting a building
 
       if (player.collisionTimer <= 0) {
-        player.collisionTimer = 0.3;
-        setFlash("Impact!", 0.5);
-        playCollisionSound();
+        triggerGameOver();
       }
     }
   }
@@ -1608,9 +1693,7 @@ function updatePlayer(dt) {
       player.speed *= 0.75;
 
       if (player.collisionTimer <= 0) {
-         player.collisionTimer = 0.4;
-         setFlash("Collision!", 0.4);
-         playCollisionSound();
+         triggerGameOver();
       }
     }
   });
