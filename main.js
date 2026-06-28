@@ -4,12 +4,31 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 
-// ─── Mobile Controls ───────────────────────────────────
+// ─── Mobile Controls & Forced Landscape ────────────────
 const isMobile = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 let mobileAccel = false;
 let mobileSteer = 0;
 
+function forceLandscapeLock() {
+  try {
+    if (screen.orientation && typeof screen.orientation.lock === 'function') {
+      screen.orientation.lock('landscape').catch(() => {});
+    }
+  } catch (e) {}
+}
+forceLandscapeLock();
+
+function getGameDimensions() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (h > w) {
+    return { width: h, height: w };
+  }
+  return { width: w, height: h };
+}
+
 window.addEventListener('touchstart', (e) => {
+  forceLandscapeLock();
   if (e.target.tagName === 'CANVAS') {
     mobileAccel = true;
   }
@@ -21,9 +40,13 @@ window.addEventListener('touchend', () => {
 function handleOrientation(event) {
   let angle = screen.orientation ? screen.orientation.angle : window.orientation;
   let tilt = 0;
-  if (angle === 90) {
+  
+  const isForcedLandscape = window.innerHeight > window.innerWidth;
+  const effectiveAngle = (angle === 90 || angle === -90 || angle === 270) ? angle : (isForcedLandscape ? 90 : 0);
+
+  if (effectiveAngle === 90) {
     tilt = event.beta;
-  } else if (angle === -90 || angle === 270) {
+  } else if (effectiveAngle === -90 || effectiveAngle === 270) {
     tilt = -event.beta;
   } else {
     tilt = event.gamma;
@@ -277,6 +300,7 @@ f1Teams.forEach((team) => {
 });
 
 btnPlay.addEventListener("click", () => {
+  forceLandscapeLock();
   if (isMobile) {
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
       DeviceOrientationEvent.requestPermission()
@@ -315,28 +339,31 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 160, 520);
 
+const { width: initW, height: initH } = getGameDimensions();
+
 const camera = new THREE.PerspectiveCamera(
   60,
-  window.innerWidth / window.innerHeight,
+  initW / initH,
   0.1,
   1000,
 );
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(initW, initH);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
-document.body.appendChild(renderer.domElement);
+const gameContainer = document.getElementById("game-container") || document.body;
+gameContainer.insertBefore(renderer.domElement, gameContainer.firstChild);
 
 // ─── Post-Processing ───────────────────────────────────
 const composer = new EffectComposer(renderer);
 const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 const bloomPass = new UnrealBloomPass(
-  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  new THREE.Vector2(initW, initH),
   1.2,  // strength
   0.4,  // radius
   0.85  // threshold
@@ -1839,10 +1866,11 @@ function isOnTrack() {
 
 // ─── Resize ────────────────────────────────────────────
 window.addEventListener("resize", () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const { width, height } = getGameDimensions();
+  camera.aspect = width / height;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(width, height);
+  composer.setSize(width, height);
 });
 
 // ─── Game Loop ─────────────────────────────────────────
